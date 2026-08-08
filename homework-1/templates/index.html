@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Support Tickets</title>
+  <style>
+    :root { --line:#e3e3e8; --muted:#6b7280; --accent:#2563eb; }
+    * { box-sizing:border-box; }
+    body { font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+           margin:0; color:#111827; background:#f7f7fb; }
+    .wrap { max-width:880px; margin:0 auto; padding:28px 20px 60px; }
+    h1 { font-size:1.5rem; margin:0 0 4px; }
+    .sub { color:var(--muted); margin:0 0 24px; }
+    .stats { display:flex; gap:10px; margin-bottom:22px; flex-wrap:wrap; }
+    .stat { background:#fff; border:1px solid var(--line); border-radius:10px;
+            padding:10px 14px; font-size:.9rem; }
+    .stat b { font-size:1.15rem; display:block; }
+    .card { background:#fff; border:1px solid var(--line); border-radius:12px;
+            padding:16px 18px; margin-bottom:22px; }
+    .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    input, select, button { font:inherit; padding:8px 10px;
+            border:1px solid var(--line); border-radius:8px; background:#fff; }
+    button { background:var(--accent); color:#fff; border:none; cursor:pointer; }
+    table { width:100%; border-collapse:collapse; background:#fff;
+            border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+    th, td { text-align:left; padding:11px 14px; border-bottom:1px solid var(--line); }
+    th { background:#fafafc; font-size:.8rem; text-transform:uppercase; color:var(--muted); }
+    tr:last-child td { border-bottom:none; }
+    a { color:var(--accent); text-decoration:none; }
+    .pill { font-size:.75rem; padding:2px 9px; border-radius:999px; border:1px solid var(--line); }
+    .open { background:#eff6ff; color:#1d4ed8; }
+    .in_progress { background:#fffbeb; color:#b45309; }
+    .resolved { background:#ecfdf5; color:#047857; }
+    .flash { padding:10px 14px; border-radius:8px; margin-bottom:14px; font-size:.9rem; }
+    .flash.error { background:#fef2f2; color:#b91c1c; }
+    .flash.ok { background:#ecfdf5; color:#047857; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Internal Support</h1>
+    <p class="sub">Tickets and messages, stored in Lakebase.</p>
+
+    {% with msgs = get_flashed_messages(with_categories=true) %}
+      {% for cat, m in msgs %}<div class="flash {{ cat }}">{{ m }}</div>{% endfor %}
+    {% endwith %}
+
+    <div class="stats">
+      {% for s in statuses %}
+        <div class="stat"><b>{{ stats.get(s, 0) }}</b>{{ s.replace('_',' ') }}</div>
+      {% endfor %}
+    </div>
+
+    <div class="card">
+      <form class="row" method="post" action="{{ url_for('create_ticket') }}">
+        <input name="title" placeholder="New ticket title" style="flex:2 1 220px">
+        <input name="created_by" placeholder="Your name" style="flex:1 1 120px">
+        <select name="priority">
+          {% for p in priorities %}<option value="{{ p }}" {{ 'selected' if p=='medium' }}>{{ p }}</option>{% endfor %}
+        </select>
+        <button type="submit">Create ticket</button>
+      </form>
+    </div>
+
+    <form class="row" method="get" style="margin-bottom:14px">
+      <label class="sub" style="margin:0">Filter:</label>
+      <select name="status" onchange="this.form.submit()">
+        <option value="">All statuses</option>
+        {% for s in statuses %}
+          <option value="{{ s }}" {{ 'selected' if s==status_filter }}>{{ s.replace('_',' ') }}</option>
+        {% endfor %}
+      </select>
+      {% if status_filter %}<a href="{{ url_for('index') }}">clear</a>{% endif %}
+    </form>
+
+    <table>
+      <thead><tr><th>Title</th><th>Status</th><th>Priority</th><th>Created by</th></tr></thead>
+      <tbody>
+        {% for t in tickets %}
+          <tr>
+            <td><a href="{{ url_for('ticket_detail', ticket_id=t.ticket_id) }}">{{ t.title }}</a></td>
+            <td><span class="pill {{ t.status }}">{{ t.status.replace('_',' ') }}</span></td>
+            <td>{{ t.priority }}</td>
+            <td>{{ t.created_by }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="4" class="sub">No tickets match this filter.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</body>
+</html>

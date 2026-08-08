@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ ticket.title }}</title>
+  <style>
+    :root { --line:#e3e3e8; --muted:#6b7280; --accent:#2563eb; }
+    * { box-sizing:border-box; }
+    body { font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+           margin:0; color:#111827; background:#f7f7fb; }
+    .wrap { max-width:720px; margin:0 auto; padding:28px 20px 60px; }
+    a { color:var(--accent); text-decoration:none; }
+    h1 { font-size:1.35rem; margin:6px 0 2px; }
+    .meta { color:var(--muted); font-size:.9rem; margin-bottom:20px; }
+    .card { background:#fff; border:1px solid var(--line); border-radius:12px;
+            padding:16px 18px; margin-bottom:18px; }
+    .msg { border-bottom:1px solid var(--line); padding:12px 0; }
+    .msg:last-child { border-bottom:none; }
+    .who { font-weight:600; font-size:.9rem; }
+    .when { color:var(--muted); font-size:.8rem; }
+    input, select, button, textarea { font:inherit; padding:8px 10px;
+            border:1px solid var(--line); border-radius:8px; background:#fff; width:100%; }
+    button { background:var(--accent); color:#fff; border:none; cursor:pointer; width:auto; }
+    .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    .pill { font-size:.75rem; padding:2px 9px; border-radius:999px; }
+    .open { background:#eff6ff; color:#1d4ed8; }
+    .in_progress { background:#fffbeb; color:#b45309; }
+    .resolved { background:#ecfdf5; color:#047857; }
+    .flash { padding:10px 14px; border-radius:8px; margin-bottom:14px; font-size:.9rem; }
+    .flash.error { background:#fef2f2; color:#b91c1c; }
+    .flash.ok { background:#ecfdf5; color:#047857; }
+    label { font-size:.85rem; color:var(--muted); display:block; margin-bottom:4px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <a href="{{ url_for('index') }}">&larr; All tickets</a>
+    <h1>{{ ticket.title }}</h1>
+    <div class="meta">
+      <span class="pill {{ ticket.status }}">{{ ticket.status.replace('_',' ') }}</span>
+      &middot; {{ ticket.priority }} priority &middot; opened by {{ ticket.created_by }}
+    </div>
+
+    {% with msgs = get_flashed_messages(with_categories=true) %}
+      {% for cat, m in msgs %}<div class="flash {{ cat }}">{{ m }}</div>{% endfor %}
+    {% endwith %}
+
+    <div class="card">
+      {% for m in messages %}
+        <div class="msg">
+          <div class="who">{{ m.author }}</div>
+          <div>{{ m.message_text }}</div>
+          <div class="when">{{ m.created_at.strftime('%Y-%m-%d %H:%M') }}</div>
+        </div>
+      {% else %}
+        <div class="meta">No messages yet.</div>
+      {% endfor %}
+    </div>
+
+    <div class="card">
+      <form method="post" action="{{ url_for('add_message', ticket_id=ticket.ticket_id) }}">
+        <label>Add a message</label>
+        <textarea name="message_text" rows="2" placeholder="Type a reply..."></textarea>
+        <div class="row" style="margin-top:10px">
+          <input name="author" placeholder="Your name" style="flex:1">
+          <button type="submit">Send</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="card">
+      <form class="row" method="post" action="{{ url_for('update_status', ticket_id=ticket.ticket_id) }}">
+        <label style="margin:0">Change status:</label>
+        <select name="status" style="width:auto">
+          {% for s in statuses %}
+            <option value="{{ s }}" {{ 'selected' if s==ticket.status }}>{{ s.replace('_',' ') }}</option>
+          {% endfor %}
+        </select>
+        <button type="submit">Update</button>
+      </form>
+    </div>
+  </div>
+</body>
+</html>

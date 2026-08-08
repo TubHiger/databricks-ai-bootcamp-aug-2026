@@ -1,0 +1,4 @@
+flask==3.0.3
+psycopg[binary]==3.2.3
+psycopg-pool==3.2.3
+databricks-sdk>=0.89.0

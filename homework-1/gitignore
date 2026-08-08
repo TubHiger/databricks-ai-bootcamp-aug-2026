@@ -1,0 +1,31 @@
+# ---- Secrets / credentials (never commit these) ----
+.env
+.env.*
+*.env
+secrets.*
+*.pem
+*.key
+*_token
+*credentials*
+.databrickscfg
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+
+# ---- OS / editor cruft ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# ---- Build / logs ----
+*.log
+dist/
+build/

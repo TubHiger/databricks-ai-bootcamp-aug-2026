@@ -19,7 +19,6 @@ import os
 from fastmcp import FastMCP
 
 import recall_broker
-from recall_broker import _SEVERITY  # noqa (kept for reference)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("recall-radar-mcp")

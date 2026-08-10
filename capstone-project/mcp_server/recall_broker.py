@@ -7,8 +7,25 @@ matching how the recalls were embedded — so NO local embedding model runs in
 the app (avoids the PyTorch memory limit on Databricks Apps).
 """
 import os
+import time
 import pg8000.native
 from databricks.sdk import WorkspaceClient
+
+def _with_retries(fn, attempts=3, base_delay=1.0):
+    """Call fn(), retrying on transient errors with exponential backoff."""
+    last = None
+    for i in range(attempts):
+        try:
+            return fn()
+        except Exception as e:
+            last = e
+            # retry on rate-limit / server errors; give up on the last attempt
+            msg = str(e).lower()
+            transient = any(s in msg for s in ("429", "500", "502", "503", "504", "timeout", "temporarily"))
+            if i == attempts - 1 or not transient:
+                raise
+            time.sleep(base_delay * (2 ** i))   # 1s, 2s, 4s
+    raise last
 
 _w = WorkspaceClient()
 
@@ -37,7 +54,7 @@ def _conn():
 
 
 def _embed(text: str):
-    resp = _w.serving_endpoints.query(name=EMBED_ENDPOINT, input=text)
+    resp = _with_retries(lambda: _w.serving_endpoints.query(name=EMBED_ENDPOINT, input=text))
     return resp.data[0].embedding
 
 
@@ -113,7 +130,7 @@ def check_watchlist(label: str) -> dict:
             continue
         m = matches[0]
         # Only alert on a reasonable semantic match
-        if m["similarity"] < 0.30:
+        if m["similarity"] < 0.68:
             continue
         sev, action = _severity_for(m["classification"])
         con = _conn()

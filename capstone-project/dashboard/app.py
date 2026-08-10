@@ -60,6 +60,29 @@ def _known_labels():
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("SELECT label FROM watchlists ORDER BY created_at DESC LIMIT 20")
         return [r[0] for r in cur.fetchall()]
+    
+
+
+def _get_alerts(label):
+    """Read persisted alerts for a watchlist label (written by the agent's check_watchlist)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT a.severity, a.match_confidence, a.recommended_action,
+                   a.status, r.firm, r.reason, a.created_at
+            FROM alerts a
+            JOIN watchlists w ON w.watchlist_id = a.watchlist_id
+            JOIN recalls r ON r.recall_id = a.recall_id
+            WHERE w.label = %s
+            ORDER BY a.created_at DESC
+            """,
+            (label,),
+        )
+        rows = cur.fetchall()
+    return [{
+        "severity": s, "confidence": round(float(c), 3) if c is not None else None,
+        "action": act, "status": st, "firm": firm, "reason": reason,
+    } for s, c, act, st, firm, reason, created in rows]
 
 
 @app.route("/", methods=["GET"])
@@ -128,9 +151,12 @@ def watchlist():
                 "confidence": round(float(sim), 3),
             })
 
+    stored_alerts = _get_alerts(label) if label else []
+
     return render_template(
         "watchlist.html",
         label=label, products=products, alerts=alerts,
+        stored_alerts=stored_alerts,
         known_labels=_known_labels(),
     )
 

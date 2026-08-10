@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Recall Radar — Watchlist</title>
+  <style>
+    body { font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+           background: #f6f7f9; margin: 0; padding: 2rem; color: #1a1a2e; }
+    .wrap { max-width: 820px; margin: 0 auto; }
+    a { color: #3b46f1; text-decoration: none; }
+    h1 { margin-bottom: .2rem; }
+    h3 { margin-bottom: .4rem; }
+    .sub { color: #667; margin-top: 0; }
+    form { margin: 1rem 0; display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+    input, select { padding: .6rem .8rem; border: 1px solid #ccd; border-radius: 8px; font-size: .95rem; }
+    input[type=text] { flex: 1; min-width: 140px; }
+    button { padding: .6rem 1.2rem; background: #3b46f1; color: #fff; border: none;
+             border-radius: 8px; font-size: .95rem; cursor: pointer; }
+    table { width: 100%; border-collapse: collapse; margin-top: .5rem; background:#fff;
+            border:1px solid #e8e8ef; border-radius:10px; overflow:hidden; }
+    th, td { text-align: left; padding: .6rem .9rem; border-bottom: 1px solid #eef; font-size:.95rem; }
+    th { font-size: .75rem; color: #667; text-transform: uppercase; letter-spacing:.03em; }
+    tr:last-child td { border-bottom: none; }
+    .card { background: #fff; border: 1px solid #e8e8ef; border-radius: 10px;
+            padding: 1rem 1.2rem; margin-bottom: .8rem; }
+    .badge { display: inline-block; padding: .15rem .6rem; border-radius: 999px;
+             font-size: .8rem; font-weight: 600; margin-left: .5rem; }
+    .High { background: #fde8e8; color: #c81e1e; }
+    .Medium { background: #fef3c7; color: #92600a; }
+    .Low { background: #e6f4ea; color: #1e7a34; }
+    .Unknown { background: #eee; color: #555; }
+    .firm { font-weight: 600; }
+    .meta { color: #889; font-size: .85rem; }
+    .section { margin-top: 1.8rem; }
+    .disclaimer { color: #889; font-size: .85rem; margin-top: 2rem;
+                  border-top: 1px solid #e8e8ef; padding-top: 1rem; }
+    .empty { color: #667; }
+    .known { margin-top: .5rem; }
+    .known a { display:inline-block; background:#eef; border-radius:999px;
+               padding:.2rem .7rem; margin:.15rem .2rem 0 0; font-size:.85rem; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>🛡️ Recall Radar — Watchlist</h1>
+    <p class="sub"><a href="/">← Back to search</a> · Save foods under your name and check them against current FDA recalls.</p>
+
+    <form method="get" action="/watchlist">
+      <input type="text" name="label" placeholder="Your name or a label (e.g. aika)" value="{{ label|e }}" required>
+      <button type="submit">Open watchlist</button>
+    </form>
+
+    {% if known_labels %}
+      <div class="known">
+        <span class="meta">Existing watchlists:</span>
+        {% for l in known_labels %}<a href="/watchlist?label={{ l|e }}">{{ l }}</a>{% endfor %}
+      </div>
+    {% endif %}
+
+    {% if label %}
+      <div class="section">
+        <h3>Add a food to “{{ label|e }}”</h3>
+        <form method="post" action="/watchlist?label={{ label|e }}">
+          <input type="hidden" name="label" value="{{ label|e }}">
+          <input type="hidden" name="kind" value="food">
+          <input type="text" name="name" placeholder="Food product (e.g. peanut butter)" required>
+          <input type="text" name="brand" placeholder="Brand (optional)">
+          <button type="submit">Add</button>
+        </form>
+      </div>
+
+      <div class="section">
+        <h3>Saved products</h3>
+        {% if products %}
+          <table>
+            <thead><tr><th>Product</th><th>Brand</th><th>Type</th></tr></thead>
+            <tbody>
+              {% for p in products %}
+                <tr><td>{{ p.name }}</td><td>{{ p.brand or '—' }}</td><td>{{ p.kind }}</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <p class="empty">No products saved yet — add one above.</p>
+        {% endif %}
+      </div>
+
+      <div class="section">
+        <h3>Recall matches</h3>
+        {% if alerts %}
+          {% for a in alerts %}
+            <div class="card">
+              <span class="firm">{{ a.firm }}</span>
+              <span class="badge {{ a.severity }}">{{ a.severity }} · {{ a.classification }}</span>
+              <div>{{ a.reason }}</div>
+              <div class="meta">matched your “{{ a.product }}” · confidence {{ a.confidence }}</div>
+              <div class="meta">▶ {{ a.action }}</div>
+            </div>
+          {% endfor %}
+        {% elif products %}
+          <p class="empty">No recall matches for your saved products right now — that's good news. Always verify with the FDA.</p>
+        {% endif %}
+      </div>
+
+      <p class="disclaimer">⚠️ Informational awareness only, not official safety advice. Verify with the manufacturer or the FDA.</p>
+    {% endif %}
+  </div>
+</body>
+</html>

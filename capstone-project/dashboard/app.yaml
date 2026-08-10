@@ -1,0 +1,6 @@
+command: ["python", "app.py"]
+env:
+  - name: ENDPOINT_NAME
+    value: "projects/recall-db/branches/production/endpoints/primary"
+  - name: EMBED_ENDPOINT
+    value: "databricks-gte-large-en"

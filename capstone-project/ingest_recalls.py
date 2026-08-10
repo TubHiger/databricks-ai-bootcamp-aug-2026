@@ -9,7 +9,7 @@ from databricks.sdk import WorkspaceClient
 
 w = WorkspaceClient()
 ENDPOINT_NAME = "projects/recall-db/branches/production/endpoints/primary"
-PGHOST = "ep-wild-violet-d86rvqjx.database.us-east-2.cloud.databricks.com"   # ep-....database.us-east-2.cloud.databricks.com
+PGHOST = "ep-wild-violet-d86rvqjx.database.us-east-2.cloud.databricks.com"
 PGUSER = w.current_user.me().user_name
 PGDATABASE = "databricks_postgres"
 
@@ -26,17 +26,33 @@ con.close()
 
 # COMMAND ----------
 
+# ===== Spark ingest: openFDA food recalls -> Lakebase =====
 import requests
 import json as _json
+import time
 from pyspark.sql import functions as F
 
-# 1. Fetch live FDA food recalls from openFDA (keyless)
-resp = requests.get(
+
+def fetch_with_retries(url, params, attempts=3, base_delay=1.0):
+    """GET with retry/backoff on transient 429/5xx errors."""
+    for i in range(attempts):
+        try:
+            resp = requests.get(url, params=params, timeout=30)
+            if resp.status_code in (429, 500, 502, 503, 504):
+                raise RuntimeError(f"transient {resp.status_code}")
+            resp.raise_for_status()
+            return resp
+        except Exception as e:
+            if i == attempts - 1:
+                raise
+            time.sleep(base_delay * (2 ** i))   # 1s, 2s, 4s
+
+
+# 1. Fetch live FDA food recalls from openFDA (keyless, with retries)
+resp = fetch_with_retries(
     "https://api.fda.gov/food/enforcement.json",
-    params={"limit": 100},
-    timeout=30,
+    {"limit": 100},
 )
-resp.raise_for_status()
 results = resp.json().get("results", [])
 print(f"Fetched {len(results)} FDA food recalls")
 
@@ -89,16 +105,17 @@ print(f"Wrote {inserted} recalls to Lakebase")
 
 # COMMAND ----------
 
-# MAGIC %pip install -q sentence-transformers
-# MAGIC dbutils.library.restartPython()
+# ===== Embed recalls with Databricks-hosted gte-large-en (1024-dim) =====
+EMBED_ENDPOINT = "databricks-gte-large-en"
 
-# COMMAND ----------
+def embed_text(text):
+    resp = w.serving_endpoints.query(name=EMBED_ENDPOINT, input=text)
+    return resp.data[0].embedding
 
-from sentence_transformers import SentenceTransformer
+def recall_text(firm, product, reason):
+    return " — ".join([p for p in [firm, product, reason] if p])
 
-MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-
-# 1. Read recalls that don't have embeddings yet
+# Read recalls that don't yet have an embedding
 con = get_conn()
 recalls = con.run("""
     SELECT r.recall_id, r.firm, r.product_description, r.reason
@@ -109,96 +126,6 @@ recalls = con.run("""
 """)
 con.close()
 print(f"Recalls to embed: {len(recalls)}")
-
-# 2. Build the text to embed: firm + product + reason (what a user would search against)
-def recall_text(firm, product, reason):
-    parts = [p for p in [firm, product, reason] if p]
-    return " — ".join(parts)
-
-texts = [recall_text(r[1], r[2], r[3]) for r in recalls]
-
-# 3. Embed
-print(f"Loading {MODEL_NAME} ...")
-model = SentenceTransformer(MODEL_NAME, cache_folder="/tmp/hf_cache")
-vectors = model.encode(texts, batch_size=32, show_progress_bar=True) if texts else []
-print(f"Computed {len(vectors)} embeddings, dim={len(vectors[0]) if len(vectors) else 'NA'}")
-
-# 4. Write to recall_embeddings (one chunk per recall — recalls are short)
-con = get_conn()
-written = 0
-for (recall_id, firm, product, reason), vec in zip(recalls, vectors):
-    emb_id = f"{recall_id}_0"
-    vec_literal = "[" + ",".join(str(float(x)) for x in vec) + "]"
-    chunk = recall_text(firm, product, reason)[:2000]
-    con.run(
-        """
-        INSERT INTO recall_embeddings
-            (id, recall_id, chunk_index, chunk_text, embedding, model_name, created_at)
-        VALUES (:id, :rid, 0, :ct, CAST(:emb AS vector), :model, now())
-        ON CONFLICT (id) DO NOTHING
-        """,
-        id=emb_id, rid=recall_id, ct=chunk, emb=vec_literal, model=MODEL_NAME,
-    )
-    written += 1
-con.close()
-print(f"Wrote {written} embeddings")
-
-# COMMAND ----------
-
-def search_recalls(query, top_k=5):
-    qvec = model.encode(query).tolist()
-    vec_literal = "[" + ",".join(str(float(x)) for x in qvec) + "]"
-    con = get_conn()
-    rows = con.run("""
-        SELECT r.firm, r.classification, r.reason,
-               1 - (e.embedding <=> CAST(:qv AS vector)) AS similarity
-        FROM recall_embeddings e
-        JOIN recalls r ON r.recall_id = e.recall_id
-        ORDER BY e.embedding <=> CAST(:qv AS vector)
-        LIMIT :k
-    """, qv=vec_literal, k=top_k)
-    con.close()
-    return rows
-
-print("=== peanut allergen ===")
-for firm, cls, reason, sim in search_recalls("peanut allergy undeclared nuts"):
-    print(f"{sim:.3f} [{cls}] {firm}: {(reason or '')[:70]}")
-
-# COMMAND ----------
-
-from databricks.sdk import WorkspaceClient
-w = WorkspaceClient()
-
-# Try a Databricks-hosted embedding endpoint
-for name in ["databricks-gte-large-en", "system.ai.gte-large-en", "databricks-bge-large-en"]:
-    try:
-        resp = w.serving_endpoints.query(name=name, input="peanut butter recall")
-        vec = resp.data[0].embedding
-        print(f"✅ {name} works, dim={len(vec)}")
-        break
-    except Exception as e:
-        print(f"❌ {name}: {str(e)[:100]}")
-
-# COMMAND ----------
-
-from databricks.sdk import WorkspaceClient
-w = WorkspaceClient()
-EMBED_ENDPOINT = "databricks-gte-large-en"
-
-def embed_text(text):
-    resp = w.serving_endpoints.query(name=EMBED_ENDPOINT, input=text)
-    return resp.data[0].embedding
-
-# Read all recalls (table was cleared)
-con = get_conn()
-recalls = con.run("""
-    SELECT recall_id, firm, product_description, reason FROM recalls
-""")
-con.close()
-print(f"Recalls to embed: {len(recalls)}")
-
-def recall_text(firm, product, reason):
-    return " — ".join([p for p in [firm, product, reason] if p])
 
 con = get_conn()
 written = 0
@@ -217,3 +144,25 @@ for recall_id, firm, product, reason in recalls:
         print(f"  embedded {written}...")
 con.close()
 print(f"Wrote {written} embeddings (dim 1024)")
+
+# COMMAND ----------
+
+# ===== Quick check: semantic search over the embedded recalls =====
+def search_recalls(query, top_k=5):
+    qvec = embed_text(query)
+    vec_literal = "[" + ",".join(str(float(x)) for x in qvec) + "]"
+    con = get_conn()
+    rows = con.run("""
+        SELECT r.firm, r.classification, r.reason,
+               1 - (e.embedding <=> CAST(:qv AS vector)) AS similarity
+        FROM recall_embeddings e
+        JOIN recalls r ON r.recall_id = e.recall_id
+        ORDER BY e.embedding <=> CAST(:qv AS vector)
+        LIMIT :k
+    """, qv=vec_literal, k=top_k)
+    con.close()
+    return rows
+
+print("=== peanut allergen ===")
+for firm, cls, reason, sim in search_recalls("peanut allergy undeclared nuts"):
+    print(f"{sim:.3f} [{cls}] {firm}: {(reason or '')[:70]}")

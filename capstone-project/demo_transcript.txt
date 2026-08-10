@@ -1,88 +1,135 @@
 # Recall Radar — Agent Demo Transcript
 
-The following is a live conversation with the Recall Radar agent (Databricks
-Agent Bricks, in the AI Playground) using the MCP server's tools. It shows the
-agent choosing tools per the system prompt, calling them, and answering from
-the tool outputs — including read and write actions.
+A live conversation with the Recall Radar agent (Databricks Agent Bricks, AI
+Playground) using the MCP server's tools. It shows the agent choosing tools per
+the system prompt, calling them, and answering from the tool outputs — covering
+both read and write actions. The MCP server exposes four tools:
+`search_recalls` (read), `add_product` (write), `check_watchlist`
+(read + write), and `list_alerts` (read).
 
 ---
 
 ## Q1 — Semantic search (READ: search_recalls)
 
-**User:** Are there any recalls involving undeclared peanuts or tree nuts?
+**User:** Search for recalls about peanut butter
 
-**Agent → tool call:** `search_recalls({"query": "undeclared peanuts or tree nuts"})`
+**Agent → tool call:**
+```json
+search_recalls({"query": "peanut butter recall", "top_k": 5})
+```
 
 **Tool output (top results):**
-- [Class I / High] Minnie Marie Bakers dba Awrey's Bakery — "Products may
-  contain undeclared tree nuts (walnuts)... risk of serious or life-threatening
-  allergic reaction." (similarity 0.699)
-- [Class II / Medium] Better Business...Better Foods — "Contains undeclared
-  almonds & undeclared sesame." (0.693)
-- [Class II / Medium] Queen Bee Gardens — "Products may potentially contain...
-  Pecans, Almonds, Coconut, Macadamia Nuts, & Walnuts." (0.686)
-- [Class I / High] Farrell Farms — "Undeclared allergen: Milk." (0.673)
+```json
+[
+  {"firm": "Savory Foods, Inc.", "classification": "Class I", "severity": "High",
+   "reason": "voluntary recall due to the potential for contamination with Listeria monocytogenes.",
+   "product": "1.5 oz PEANUT BUTTER COOKIES, 80/case", "similarity": 0.8285},
+  {"firm": "NUTCO Inc. dba Germack Pistachio Co.", "classification": "Class II", "severity": "Medium",
+   "reason": "recalling its Dark Chocolate Almond Bark ... due to undeclared allergen milk.",
+   "product": "Dark Chocolate Almond Bark 5oz & 1lb", "similarity": 0.7542},
+  {"firm": "Quaker Manufacturing, LLC", "classification": "Class I", "severity": "High",
+   "reason": "Product tested positive for Salmonella.",
+   "product": "Cap'n Crunch's Peanut Butter Crunch Cereal", "similarity": 0.7522}
+]
+```
 
-**Agent answer:** Reported the recalls, led with severity (High/Medium), and
-added the disclaimer to verify with the manufacturer or the FDA.
+**Agent answer:** Listed the recalls, leading with severity (High = Class I,
+Medium = Class II), and added the disclaimer to verify with the manufacturer or
+the FDA before acting.
 
 ---
 
-## Q2 — Register products (WRITE: add_product)
+## Q2 — Register a product (WRITE: add_product)
 
-**User:** Add peanut butter by Jif and a Honda Civic to my watchlist called 'aika'.
+**User:** Add peanut butter by Jif to my watchlist 'aika'
 
-**Agent → tool calls:**
-- `add_product({"label":"aika","kind":"food","name":"peanut butter","brand":"Jif"})`
-  → `{"watchlist":"aika","added":{...}}`
-- `add_product({"label":"aika","kind":"vehicle","name":"Civic","brand":"Honda"})`
-  → `{"watchlist":"aika","added":{...}}`
+**Agent → tool call:**
+```json
+add_product({"name": "peanut butter", "label": "aika", "brand": "Jif", "kind": "food"})
+```
 
-Note: the agent correctly inferred `kind: food` for the peanut butter and
-`kind: vehicle` for the Civic from natural language.
+**Tool output:**
+```json
+{"watchlist": "aika", "added": {"kind": "food", "name": "peanut butter", "brand": "Jif"}}
+```
 
-**Agent answer:** Confirmed both products were added to watchlist 'aika'.
+Note: the agent correctly inferred `kind: food` from the natural-language
+request. This is a write — the product is persisted to the `watched_products`
+table in Lakebase.
+
+**Agent answer:** Confirmed Jif peanut butter was added to watchlist 'aika' and
+suggested checking the watchlist for recalls.
 
 ---
 
 ## Q3 — Monitoring action (READ + WRITE: check_watchlist)
 
-**User:** Check my watchlist 'aika' for any recalls.
+**User:** Check my watchlist 'aika' for recalls
 
-**Agent → tool call:** `check_watchlist({"label":"aika"})`
+**Agent → tool call:**
+```json
+check_watchlist({"label": "aika"})
+```
 
-**Tool output:** `alerts_created: 2`
-- peanut butter → matched Quaker Manufacturing, LLC — "Product tested positive
-  for Salmonella." severity **High**, match_confidence 0.718, action: "Class I
-  recall (most serious). Stop using immediately and contact the firm."
-- Civic → matched G.O. Fresh (cantaloupe/Salmonella) — severity High,
-  match_confidence **0.516**.
+**Tool output:**
+```json
+{"watchlist": "aika", "alerts_created": 1,
+ "alerts": [
+   {"product": "peanut butter", "matched_recall": "Quaker Manufacturing, LLC",
+    "reason": "Product tested positive for Salmonella.", "severity": "High",
+    "match_confidence": 0.7183,
+    "recommended_action": "Class I recall (most serious). Stop using immediately and contact the firm / seek guidance."}
+ ]}
+```
 
-**Agent answer:** Reported both alerts with severity and recommended actions —
-and, notably, flagged the Civic match as **low-confidence / likely a false
-positive** ("the match confidence is relatively low (0.5161)... this should be
-verified"), rather than falsely alarming the user. This reflects the system
-prompt's guardrail against overstating matches. (The Civic has no legitimate
-match because the MVP ingests food recalls only.)
+The tool embeds each watched product, runs a pgvector similarity search against
+the recalls, and — only for matches at or above the 0.68 similarity floor —
+writes an alert (with severity, match confidence, and a recommended action) to
+the `alerts` table. This is the core monitoring action: a read (semantic match)
+followed by a write (persisted alert).
+
+**Agent answer:** Reported the High-severity peanut butter alert (Quaker /
+Salmonella, Class I), its match confidence, and the recommended action, with the
+FDA/manufacturer disclaimer.
 
 ---
 
 ## Q4 — Retrieve stored alerts (READ: list_alerts)
 
-**User:** Show me the alerts on my watchlist 'aika'.
+**User:** Show me the alerts on my watchlist 'aika'
 
-**Agent → tool call:** `list_alerts({"label":"aika"})`
+**Agent → tool call:**
+```json
+list_alerts({"label": "aika"})
+```
 
-**Tool output:** the 2 alerts created in Q3, with severity, firm, reason, and
-recommended action — proving the writes persisted to Lakebase.
+**Tool output:**
+```json
+{"watchlist": "aika",
+ "alerts": [
+   {"product": "peanut butter", "matched_recall": "Quaker Manufacturing, LLC",
+    "reason": "Product tested positive for Salmonella.", "severity": "High",
+    "match_confidence": 0.7183,
+    "recommended_action": "Class I recall (most serious). Stop using immediately and contact the firm / seek guidance."}
+ ]}
+```
+
+**Agent answer:** Returned the stored alert — confirming the write from Q3
+persisted to Lakebase and is retrievable in a later turn.
 
 ---
 
 ## What this demonstrates
 
-- The agent selects the correct tool per the system prompt's routing rules.
-- **Read** (search_recalls, list_alerts) and **write** (add_product,
-  check_watchlist → creates alerts) actions both work against Lakebase.
-- Severity is derived from the FDA classification and surfaced in every answer.
-- Guardrails hold: the agent never invents recalls, adds the FDA/manufacturer
-  disclaimer, and honestly flags low-confidence matches instead of overstating.
+- The agent selects the correct tool per the system prompt's routing rules
+  (search vs. add vs. check vs. list).
+- **Read** tools (`search_recalls`, `list_alerts`) and **write** tools
+  (`add_product`, `check_watchlist`) both operate against Lakebase.
+- Severity is derived from the FDA recall classification (Class I/II/III →
+  High/Medium/Low) and surfaced in every answer, alongside a recommended action.
+- The 0.68 similarity floor is applied consistently in the agent
+  (`check_watchlist`) and the dashboard, so only confident matches become
+  alerts — an unrelated product (e.g. a vehicle, with no food-recall match)
+  correctly produces no alert rather than a false positive.
+- Guardrails hold: the agent never invents recalls and always adds the
+  FDA/manufacturer verification disclaimer.

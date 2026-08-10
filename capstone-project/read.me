@@ -1,88 +1,123 @@
-# Recall Radar — Agent Demo Transcript
+# 🛡️ Recall Radar — Product-Safety AI Agent
 
-The following is a live conversation with the Recall Radar agent (Databricks
-Agent Bricks, in the AI Playground) using the MCP server's tools. It shows the
-agent choosing tools per the system prompt, calling them, and answering from
-the tool outputs — including read and write actions.
+**Databricks AI Bootcamp Capstone** — an agentic product-safety assistant that
+monitors live FDA recall data, semantically matches recalls to products people
+own, scores severity, and takes real actions (writes alerts). Anyone can search
+recalls by meaning or keep a watchlist of products to monitor — no login
+required.
 
----
+> ⚠️ Informational awareness only, not official safety or medical advice.
+> Always verify with the manufacturer or the FDA and follow official guidance.
 
-## Q1 — Semantic search (READ: search_recalls)
+## What it does
 
-**User:** Are there any recalls involving undeclared peanuts or tree nuts?
+- **Search recalls by meaning:** "undeclared peanuts", "salmonella in flour",
+  "listeria" → the most semantically relevant FDA recalls, ranked, with severity.
+- **Watchlist monitoring:** add products (food/drug/device/vehicle) to a
+  labeled watchlist; the agent matches them against recalls and **writes alerts**
+  with a severity and a recommended action.
+- **Two ways to use it:** a web app (recall search + a save-by-name watchlist
+  that checks your foods against current recalls) and an AI agent (natural-
+  language chat via Databricks Agent Bricks).
+- **Honest matching:** results are gated by a similarity threshold, so an
+  unrelated query (e.g. a product with no matching recall) returns "no recalls
+  found" instead of a misleading weak match.
 
-**Agent → tool call:** `search_recalls({"query": "undeclared peanuts or tree nuts"})`
+## Architecture
 
-**Tool output (top results):**
-- [Class I / High] Minnie Marie Bakers dba Awrey's Bakery — "Products may
-  contain undeclared tree nuts (walnuts)... risk of serious or life-threatening
-  allergic reaction." (similarity 0.699)
-- [Class II / Medium] Better Business...Better Foods — "Contains undeclared
-  almonds & undeclared sesame." (0.693)
-- [Class II / Medium] Queen Bee Gardens — "Products may potentially contain...
-  Pecans, Almonds, Coconut, Macadamia Nuts, & Walnuts." (0.686)
-- [Class I / High] Farrell Farms — "Undeclared allergen: Milk." (0.673)
+```
+┌ INGEST (Spark) ─────────────────────────────────────────────┐
+│  openFDA food enforcement API (keyless)                      │
+│  → Spark DataFrame: parse JSON, normalize, build recall_id   │
+│  → Lakebase `recalls`                                         │
+└──────────────────────────────────────────────────────────────┘
+        │
+┌ EMBED ──────────────────────────────────────────────────────┐
+│  Databricks-hosted gte-large-en endpoint (1024-dim)          │
+│  → Lakebase `recall_embeddings` (VECTOR(1024) + HNSW)        │
+└──────────────────────────────────────────────────────────────┘
+        │
+┌ SERVE ──────────────────────────────────────────────────────┐
+│  MCP server (FastMCP, Databricks App)  ── Agent Bricks agent │
+│    search_recalls · add_product · check_watchlist · list_alerts│
+│  Flask dashboard (Databricks App)      ── web search UI       │
+│  both read/write Lakebase; queries embedded via gte-large-en  │
+└──────────────────────────────────────────────────────────────┘
+```
 
-**Agent answer:** Reported the recalls, led with severity (High/Medium), and
-added the disclaimer to verify with the manufacturer or the FDA.
+## Capstone requirements — how each is met
 
----
+| Requirement | Implementation |
+|---|---|
+| **Spark data pipeline** | `ingest_recalls` notebook: Spark reads openFDA JSON, normalizes to the `recalls` schema, writes to Lakebase. |
+| **Third-party API** | openFDA food enforcement (recalls) + Databricks Foundation Model API (gte-large-en embeddings). Both keyless from within Databricks. |
+| **Unstructured data processing** | Free-text recall reason + product + firm embedded to 1024-dim vectors for semantic retrieval (pgvector cosine). |
+| **Databricks App with frontend** | `recall-radar-dashboard` — Flask web UI: a recall search page (ranked cards with color-coded severity badges) plus a save-by-name watchlist page (add foods → saved-products table → recall matches). |
+| **AI agent (read + write)** | Agent Bricks agent over the MCP server: **reads** (search_recalls, list_alerts) and **writes** (add_product, check_watchlist → creates alerts). |
 
-## Q2 — Register products (WRITE: add_product)
+## The agent's tools
 
-**User:** Add peanut butter by Jif and a Honda Civic to my watchlist called 'aika'.
+| Tool | R/W | Description |
+|---|---|---|
+| `search_recalls(query, top_k)` | READ | Semantic search over recalls (pgvector). |
+| `add_product(label, kind, name, brand)` | WRITE | Add a product to a watchlist (no login; label is user-chosen). |
+| `check_watchlist(label)` | READ+WRITE | Match watchlist products to recalls; create alerts with severity + recommended action. |
+| `list_alerts(label)` | READ | List alerts for a watchlist. |
 
-**Agent → tool calls:**
-- `add_product({"label":"aika","kind":"food","name":"peanut butter","brand":"Jif"})`
-  → `{"watchlist":"aika","added":{...}}`
-- `add_product({"label":"aika","kind":"vehicle","name":"Civic","brand":"Honda"})`
-  → `{"watchlist":"aika","added":{...}}`
+**Severity** comes from the FDA recall classification: Class I → High,
+Class II → Medium, Class III → Low. Each alert includes a recommended action
+(e.g. "Class I recall — stop using immediately and contact the firm").
 
-Note: the agent correctly inferred `kind: food` for the peanut butter and
-`kind: vehicle` for the Civic from natural language.
+## Lakebase schema
 
-**Agent answer:** Confirmed both products were added to watchlist 'aika'.
+`recalls`, `recall_embeddings` (VECTOR(1024) + HNSW), `watchlists`,
+`watched_products`, `alerts`. See `schema.sql`.
 
----
+## Data source + why
 
-## Q3 — Monitoring action (READ + WRITE: check_watchlist)
+**openFDA** (food enforcement) — free, keyless, weekly-updated FDA recall data
+with a built-in severity signal (Class I/II/III). No secrets anywhere in the
+project. Query embedding uses the **Databricks-hosted gte-large-en** endpoint so
+no embedding model runs inside the app (avoids the app-memory limit).
 
-**User:** Check my watchlist 'aika' for any recalls.
+**Confidence threshold.** Both the search page and the watchlist matcher require
+a cosine similarity of at least ~0.68 before surfacing a recall. This separates
+true product matches (which score ~0.70+) from generic food-adjacency (~0.62-
+0.66), so an unrelated query returns "no recalls found" rather than a
+misleading weak match — the honest behaviour a safety tool should have.
 
-**Agent → tool call:** `check_watchlist({"label":"aika"})`
+## Repo layout
 
-**Tool output:** `alerts_created: 2`
-- peanut butter → matched Quaker Manufacturing, LLC — "Product tested positive
-  for Salmonella." severity **High**, match_confidence 0.718, action: "Class I
-  recall (most serious). Stop using immediately and contact the firm."
-- Civic → matched G.O. Fresh (cantaloupe/Salmonella) — severity High,
-  match_confidence **0.516**.
+```
+capstone/
+├── README.md
+├── schema.sql
+├── demo_transcript.md          # agent conversation (legible text)
+├── ingest_recalls.py           # Spark ingest + embedding notebook (exported)
+├── system_prompt.txt           # agent system prompt
+├── mcp_server/                 # the MCP agent server (Databricks App)
+│   ├── recall_mcp_server.py
+│   ├── recall_broker.py
+│   ├── requirements.txt
+│   └── app.yaml
+└── dashboard/                  # the Flask frontend (Databricks App)
+    ├── app.py
+    ├── db.py
+    ├── templates/index.html    # recall search page
+    ├── templates/watchlist.html # save-by-name watchlist page
+    ├── requirements.txt
+    └── app.yaml
+```
 
-**Agent answer:** Reported both alerts with severity and recommended actions —
-and, notably, flagged the Civic match as **low-confidence / likely a false
-positive** ("the match confidence is relatively low (0.5161)... this should be
-verified"), rather than falsely alarming the user. This reflects the system
-prompt's guardrail against overstating matches. (The Civic has no legitimate
-match because the MVP ingests food recalls only.)
+## Known limitations / next steps
 
----
-
-## Q4 — Retrieve stored alerts (READ: list_alerts)
-
-**User:** Show me the alerts on my watchlist 'aika'.
-
-**Agent → tool call:** `list_alerts({"label":"aika"})`
-
-**Tool output:** the 2 alerts created in Q3, with severity, firm, reason, and
-recommended action — proving the writes persisted to Lakebase.
-
----
-
-## What this demonstrates
-
-- The agent selects the correct tool per the system prompt's routing rules.
-- **Read** (search_recalls, list_alerts) and **write** (add_product,
-  check_watchlist → creates alerts) actions both work against Lakebase.
-- Severity is derived from the FDA classification and surfaced in every answer.
-- Guardrails hold: the agent never invents recalls, adds the FDA/manufacturer
-  disclaimer, and honestly flags low-confidence matches instead of overstating.
+- **MVP ingests FDA *food* recalls only.** Drug/device (openFDA) and vehicle
+  (NHTSA) recalls are natural next additions — the `recalls.source` column and
+  the `kind` field are already in place for them. (A vehicle on a watchlist
+  currently has no legitimate recall to match; the agent correctly flags such
+  low-confidence matches as likely false positives rather than alarming the
+  user — a deliberate guardrail.)
+- **Scheduled refresh:** the Spark ingest runs on demand; a scheduled Databricks
+  Job would keep recalls current (openFDA updates weekly).
+- **Informational only:** per openFDA terms, this is awareness tooling, not a
+  substitute for official FDA/manufacturer guidance.

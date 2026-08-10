@@ -1,0 +1,3 @@
+command:
+  - "python"
+  - "weather_mcp_server.py"
